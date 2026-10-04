@@ -40,6 +40,13 @@ declare namespace Handlebars {
     allowedProtoMethods?: { [name: string]: boolean };
     allowProtoPropertiesByDefault?: boolean;
     allowProtoMethodsByDefault?: boolean;
+    /**
+     * Maximum nesting depth of partial calls within a single render. When
+     * exceeded, a Handlebars.Exception is thrown instead of overflowing the
+     * JavaScript stack. Overrides the compile-time value. `0` disables the
+     * limit; must otherwise be a non-negative integer.
+     */
+    maxPartialDepth?: number;
   }
 
   export interface HelperOptions {
@@ -242,6 +249,15 @@ export interface CompileOptions {
   preventIndent?: boolean;
   ignoreStandalone?: boolean;
   explicitPartialContext?: boolean;
+  /**
+   * Maximum nesting depth of partial calls within a single render. When
+   * exceeded, a Handlebars.Exception is thrown instead of overflowing the
+   * JavaScript stack. The value is baked into precompiled templates and can
+   * be overridden per render via the same option in runtime options. `0`
+   * disables the limit; must otherwise be a non-negative integer. Defaults
+   * to 200 when unset.
+   */
+  maxPartialDepth?: number;
 }
 
 export type KnownHelpers = {

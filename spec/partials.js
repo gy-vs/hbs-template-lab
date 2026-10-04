@@ -674,4 +674,286 @@ describe('partials', function () {
         );
     });
   });
+
+  describe('maxPartialDepth', function () {
+    // chain(n) drives the single `rec` partial n+1 levels deep:
+    // chain(0) -> 1 partial invocation, chain(k) -> k + 1 invocations,
+    // producing k pairs of brackets.
+    function chain(n) {
+      let current = {};
+      while (n--) {
+        current = { deeper: current };
+      }
+      return current;
+    }
+    var recursivePartial = '{{#if deeper}}[{{> rec deeper}}]{{/if}}';
+
+    function brackets(n) {
+      return Array.from({ length: n + 1 }).join('[') +
+        Array.from({ length: n + 1 }).join(']');
+    }
+
+    it('allows nesting exactly at the limit', function () {
+      expectTemplate('{{> rec .}}')
+        .withInput(chain(2))
+        .withPartials({ rec: recursivePartial })
+        .withCompileOptions({ maxPartialDepth: 3 })
+        .toCompileTo('[[]]');
+    });
+
+    it('throws a Handlebars.Exception when nesting exceeds the limit', function () {
+      expectTemplate('{{> rec .}}')
+        .withInput(chain(3))
+        .withPartials({ rec: recursivePartial })
+        .withCompileOptions({ maxPartialDepth: 3 })
+        .toThrow(
+          Handlebars.Exception,
+          /Partial nesting depth of 4 exceeded the maxPartialDepth of 3/
+        );
+    });
+
+    it('lists the partial chain from outermost to innermost', function () {
+      expectTemplate('{{> rec .}}')
+        .withInput(chain(3))
+        .withPartials({ rec: recursivePartial })
+        .withCompileOptions({ maxPartialDepth: 3 })
+        .toThrow(
+          Handlebars.Exception,
+          /Partial chain \(outermost to innermost\): rec > rec > rec > rec/
+        );
+    });
+
+    it('abbreviates the middle of long chains but keeps head and tail', function () {
+      var env = Handlebars.create();
+      env.registerPartial('rec', recursivePartial);
+      // chain(25) reaches depth 26, so the thrown chain has 26 entries
+      var template = env.compile('{{> rec .}}', { maxPartialDepth: 25 });
+
+      var message;
+      try {
+        template(chain(25));
+      } catch (error) {
+        message = error.message;
+      }
+
+      expect(message).toBeDefined();
+      // first 10 and last 10 names stay, the 6 in the middle collapse
+      expect(message).toMatch(/\.\.\.\(6 more\)\.\.\./);
+      var visibleNames = message.split('Partial chain')[1];
+      expect(visibleNames.indexOf('rec > rec > rec > rec > rec')).toBe(
+        visibleNames.indexOf(':') + 2
+      );
+      expect(visibleNames).toMatch(/rec > rec > rec > rec > rec$/);
+      expect((visibleNames.match(/\brec\b/g) || []).length).toBe(20);
+    });
+
+    it('counts dynamically chosen partials', function () {
+      expectTemplate('{{> (which) .}}')
+        .withInput(chain(2))
+        .withHelper('which', function () {
+          return 'rec';
+        })
+        .withPartials({ rec: '{{#if deeper}}[{{> (which) deeper}}]{{/if}}' })
+        .withCompileOptions({ maxPartialDepth: 2 })
+        .toThrow(
+          Handlebars.Exception,
+          /depth of 3[\s\S]*Partial chain \(outermost to innermost\): rec > rec > rec/
+        );
+    });
+
+    it('counts block partials', function () {
+      expectTemplate('{{#> rec .}}content{{/rec}}')
+        .withInput(chain(2))
+        .withPartials({
+          rec: '{{#if deeper}}[{{#> rec deeper}}x{{/rec}}]{{/if}}',
+        })
+        .withCompileOptions({ maxPartialDepth: 2 })
+        .toThrow(
+          Handlebars.Exception,
+          /depth of 3[\s\S]*Partial chain \(outermost to innermost\): rec > rec > rec/
+        );
+    });
+
+    it('counts inline partials', function () {
+      expectTemplate(
+        '{{#* inline "rec"}}{{#if deeper}}[{{> rec deeper}}]{{/if}}{{/inline}}{{> rec .}}'
+      )
+        .withInput(chain(2))
+        .withCompileOptions({ maxPartialDepth: 2 })
+        .toThrow(
+          Handlebars.Exception,
+          /depth of 3[\s\S]*Partial chain \(outermost to innermost\): rec > rec > rec/
+        );
+    });
+
+    it('reports the chain through mutually recursive partials', function () {
+      expectTemplate('{{> a .}}')
+        .withInput(chain(4))
+        .withPartials({
+          a: '{{#if deeper}}a[{{> b deeper}}]{{/if}}',
+          b: '{{#if deeper}}b[{{> a deeper}}]{{/if}}',
+        })
+        .withCompileOptions({ maxPartialDepth: 4 })
+        .toThrow(
+          Handlebars.Exception,
+          /Partial chain \(outermost to innermost\): a > b > a > b > a/
+        );
+    });
+
+    it('does not count each/with block helpers as depth', function () {
+      expectTemplate(
+        '{{#with root}}{{#each items}}{{> leaf .}}{{/each}}{{/with}}'
+      )
+        .withInput({ root: { items: [1, 2, 3] } })
+        .withPartials({ leaf: '{{.}}' })
+        .withCompileOptions({ maxPartialDepth: 1 })
+        .toCompileTo('123');
+    });
+
+    it('does not accumulate depth across sibling partials', function () {
+      expectTemplate('{{#each items}}{{> leaf .}}{{/each}}')
+        .withInput({
+          items: Array.from({ length: 100 }, function (_, i) {
+            return i;
+          }),
+        })
+        .withPartials({ leaf: '{{.}}.' })
+        .withCompileOptions({ maxPartialDepth: 1 })
+        .toCompileTo(
+          Array.from({ length: 100 }, function (_, i) {
+            return i + '.';
+          }).join('')
+        );
+    });
+
+    it('keeps renders independent from each other', function () {
+      var env = Handlebars.create();
+      env.registerPartial('rec', recursivePartial);
+      var template = env.compile('{{> rec .}}', { maxPartialDepth: 2 });
+
+      expect(function () {
+        template(chain(5));
+      }).toThrow();
+      // A later, shallow render of the same template must still work: the
+      // chain from the failed render must not leak into subsequent renders.
+      expect(template(chain(1))).toBe('[]');
+      expect(function () {
+        template(chain(2));
+      }).toThrow(Handlebars.Exception);
+    });
+
+    it('lets runtime options lower the compile-time limit', function () {
+      expectTemplate('{{> rec .}}')
+        .withInput(chain(3))
+        .withPartials({ rec: recursivePartial })
+        .withCompileOptions({ maxPartialDepth: 100 })
+        .withRuntimeOptions({ maxPartialDepth: 3 })
+        .toThrow(
+          Handlebars.Exception,
+          /Partial nesting depth of 4 exceeded the maxPartialDepth of 3/
+        );
+    });
+
+    it('lets runtime options raise the compile-time limit', function () {
+      expectTemplate('{{> rec .}}')
+        .withInput(chain(3))
+        .withPartials({ rec: recursivePartial })
+        .withCompileOptions({ maxPartialDepth: 2 })
+        .withRuntimeOptions({ maxPartialDepth: 4 })
+        .toCompileTo('[[[]]]');
+    });
+
+    it('disables the limit at runtime with maxPartialDepth 0', function () {
+      expectTemplate('{{> rec .}}')
+        .withInput(chain(20))
+        .withPartials({ rec: recursivePartial })
+        .withCompileOptions({ maxPartialDepth: 2 })
+        .withRuntimeOptions({ maxPartialDepth: 0 })
+        .toCompileTo(brackets(20));
+    });
+
+    it('disables the limit at compile time with maxPartialDepth 0', function () {
+      expectTemplate('{{> rec .}}')
+        .withInput(chain(20))
+        .withPartials({ rec: recursivePartial })
+        .withCompileOptions({ maxPartialDepth: 0 })
+        .toCompileTo(brackets(20));
+    });
+
+    it('rejects invalid compile-time values', function () {
+      expect(function () {
+        Handlebars.compile('x', { maxPartialDepth: -1 });
+      }).toThrow(Handlebars.Exception, /maxPartialDepth/);
+
+      expect(function () {
+        Handlebars.compile('x', { maxPartialDepth: 1.5 });
+      }).toThrow(Handlebars.Exception, /maxPartialDepth/);
+
+      expect(function () {
+        Handlebars.compile('x', { maxPartialDepth: 'lots' });
+      }).toThrow(Handlebars.Exception, /maxPartialDepth/);
+    });
+
+    it('rejects invalid runtime values', function () {
+      var template = Handlebars.compile('x');
+      expect(function () {
+        template({}, { maxPartialDepth: -2 });
+      }).toThrow(Handlebars.Exception, /maxPartialDepth/);
+      expect(function () {
+        template({}, { maxPartialDepth: true });
+      }).toThrow(Handlebars.Exception, /maxPartialDepth/);
+    });
+
+    it('protects precompiled templates via the baked-in compile option', function () {
+      var env = Handlebars.create();
+      var spec = env.precompile('{{> rec .}}', { maxPartialDepth: 2 });
+      /* eslint-disable no-eval */
+      var template = env.template(eval('(' + spec + ')'));
+      /* eslint-enable no-eval */
+      env.registerPartial('rec', recursivePartial);
+
+      expect(template(chain(1))).toBe('[]');
+      expect(function () {
+        template(chain(2));
+      }).toThrow(
+        Handlebars.Exception,
+        /Partial nesting depth of 3 exceeded the maxPartialDepth of 2/
+      );
+    });
+
+    it('allows runtime options to override precompiled templates', function () {
+      var env = Handlebars.create();
+      var spec = env.precompile('{{> rec .}}');
+      /* eslint-disable no-eval */
+      var template = env.template(eval('(' + spec + ')'));
+      /* eslint-enable no-eval */
+      env.registerPartial('rec', recursivePartial);
+
+      expect(function () {
+        template(chain(2), { maxPartialDepth: 2 });
+      }).toThrow(
+        Handlebars.Exception,
+        /Partial nesting depth of 3 exceeded the maxPartialDepth of 2/
+      );
+    });
+
+    it('prevents cyclic data from overflowing the JS stack by default', function () {
+      var env = Handlebars.create();
+      var a = { replies: [] };
+      var b = { replies: [a] };
+      a.replies.push(b);
+      env.registerPartial(
+        'comment',
+        '{{#each replies}}{{> comment .}}{{/each}}'
+      );
+      var template = env.compile('{{> comment .}}');
+
+      expect(function () {
+        template(a);
+      }).toThrow(
+        Handlebars.Exception,
+        /exceeded the maxPartialDepth of 200[\s\S]*comment > comment/
+      );
+    });
+  });
 });
