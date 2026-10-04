@@ -674,4 +674,257 @@ describe('partials', function () {
         );
     });
   });
+
+  describe('maxPartialDepth', function () {
+    // Builds a tree of `depth` nested comment nodes, each with one reply.
+    function nestedReplies(depth) {
+      var node = { leaf: true };
+      while (depth--) {
+        node = { replies: [node] };
+      }
+      return node;
+    }
+
+    var commentPartial = '{{#each replies}}{{> comment .}}{{/each}}';
+
+    it('does not block flat lists of partials', function () {
+      var input = {
+        replies: Array.apply(null, Array(300)).map(function (_, i) {
+          return { id: i, replies: [] };
+        }),
+      };
+      expectTemplate('{{#each replies}}{{> comment .}}{{/each}}')
+        .withInput(input)
+        .withPartial('comment', '{{id}}!')
+        .withCompileOptions({ maxPartialDepth: 3 })
+        .toCompileTo(
+          input.replies
+            .map(function (c) {
+              return c.id + '!';
+            })
+            .join('')
+        );
+    });
+
+    it('does not count each/with blocks as nesting levels', function () {
+      expectTemplate('{{> comment .}}')
+        .withInput(nestedReplies(2))
+        .withPartial(
+          'comment',
+          '.{{#with .}}{{#each replies}}{{> comment .}}{{/each}}{{/with}}'
+        )
+        .withCompileOptions({ maxPartialDepth: 3 })
+        .toCompileTo('...');
+    });
+
+    it('allows trees nested within the limit', function () {
+      expectTemplate('{{> comment .}}')
+        .withInput(nestedReplies(3))
+        .withPartial('comment', 'x{{#each replies}}{{> comment .}}{{/each}}')
+        .withCompileOptions({ maxPartialDepth: 4 })
+        .toCompileTo('xxxx');
+    });
+    it('throws a Handlebars.Exception when the limit is exceeded', function () {
+      expectTemplate('{{> comment .}}')
+        .withInput(nestedReplies(6))
+        .withPartial('comment', commentPartial)
+        .withCompileOptions({ maxPartialDepth: 3 })
+        .toThrow(
+          Handlebars.Exception,
+          /Partial nesting depth exceeded the maxPartialDepth limit of 3 \(reached depth 4 while entering "comment"\)/
+        );
+    });
+
+    it('reports the partial chain from outermost to innermost', function () {
+      expectTemplate('{{> a}}')
+        .withInput({})
+        .withPartials({
+          a: '{{>b}}',
+          b: '{{>c}}',
+          c: '{{>d}}',
+          d: '{{>e}}',
+          e: '{{>f}}',
+          f: '',
+        })
+        .withCompileOptions({ maxPartialDepth: 4 })
+        .toThrow(Handlebars.Exception, /Partial chain: a -> b -> c -> d -> e/);
+    });
+
+    it('collapses long chains while keeping head and tail', function () {
+      var partials = {},
+        i;
+      for (i = 0; i < 12; i++) {
+        partials['p' + i] = '{{>p' + (i + 1) + '}}';
+      }
+      var thrown;
+      try {
+        var template = handlebarsEnv.compile('{{>p0}}', {
+          maxPartialDepth: 11,
+        });
+        template(
+          {},
+          {
+            partials: partials,
+          }
+        );
+      } catch (e) {
+        thrown = e;
+      }
+      expect(thrown).toBeInstanceOf(Handlebars.Exception);
+      expect(thrown.message).toContain('limit of 11');
+      expect(thrown.message).toContain('Partial chain: p0 -> p1');
+      expect(thrown.message).toContain('p10 -> p11');
+      expect(thrown.message).toMatch(/\(\d+ more\)/);
+    });
+
+    it('applies to dynamic partials', function () {
+      expectTemplate('{{> comment .}}')
+        .withInput(nestedReplies(5))
+        .withHelper('partialName', function () {
+          return 'comment';
+        })
+        .withPartial(
+          'comment',
+          '{{#each replies}}{{> (partialName) .}}{{/each}}'
+        )
+        .withCompileOptions({ maxPartialDepth: 3 })
+        .toThrow(Handlebars.Exception, /maxPartialDepth limit of 3/);
+    });
+
+    it('applies to block partials', function () {
+      var env = Handlebars.create();
+      env.registerPartial('comment', '{{#> comment .}}body{{/comment}}');
+      var template = env.compile('{{#> comment .}}body{{/comment}}', {
+        maxPartialDepth: 3,
+      });
+      expect(function () {
+        template(nestedReplies(5));
+      }).toThrow(Handlebars.Exception, /maxPartialDepth limit of 3/);
+    });
+
+    it('applies to inline partials', function () {
+      expectTemplate(
+        '{{#*inline "comment"}}{{> comment}}{{/inline}}{{> comment}}'
+      )
+        .withCompileOptions({ maxPartialDepth: 3 })
+        .toThrow(Handlebars.Exception, /Partial chain: comment -> comment/);
+    });
+
+    it('applies through @partial-block nesting', function () {
+      var env = Handlebars.create();
+      env.registerPartial(
+        'comment',
+        '{{#> comment}}{{> @partial-block}}{{/comment}}'
+      );
+      var template = env.compile('{{#> comment}}body{{/comment}}', {
+        maxPartialDepth: 10,
+      });
+      expect(function () {
+        template({});
+      }).toThrow(Handlebars.Exception, /maxPartialDepth limit of 10/);
+    });
+
+    it('lets runtime options override compile options', function () {
+      expectTemplate('{{> comment .}}')
+        .withInput(nestedReplies(6))
+        .withPartial('comment', commentPartial)
+        .withCompileOptions({ maxPartialDepth: 50 })
+        .withRuntimeOptions({ maxPartialDepth: 3 })
+        .toThrow(Handlebars.Exception, /limit of 3 \(reached depth 4/);
+    });
+
+    it('uses a default limit of 200', function () {
+      expectTemplate('{{> comment .}}')
+        .withInput(nestedReplies(210))
+        .withPartial('comment', commentPartial)
+        .toThrow(Handlebars.Exception, /limit of 200/);
+    });
+
+    it('allows depth 100 with the default limit', function () {
+      expectTemplate('{{> comment .}}')
+        .withInput(nestedReplies(100))
+        .withPartial('comment', commentPartial)
+        .toCompileTo('');
+    });
+
+    it('treats 0 and other invalid values as the default', function () {
+      [0, -1, 1.5, '5', NaN, true, Infinity].forEach(function (value) {
+        expectTemplate('{{> comment .}}')
+          .withInput(nestedReplies(2))
+          .withPartial('comment', commentPartial)
+          .withCompileOptions({ maxPartialDepth: value })
+          .toCompileTo('');
+        expectTemplate('{{> comment .}}')
+          .withInput(nestedReplies(210))
+          .withPartial('comment', commentPartial)
+          .withCompileOptions({ maxPartialDepth: value })
+          .toThrow(Handlebars.Exception, /limit of 200/);
+      });
+    });
+
+    it('resets the counter between independent renders', function () {
+      var env = Handlebars.create();
+      env.registerPartial('comment', commentPartial);
+      var template = env.compile('{{> comment .}}', {
+        maxPartialDepth: 3,
+      });
+      expect(function () {
+        template(nestedReplies(6));
+      }).toThrow(Handlebars.Exception, /maxPartialDepth/);
+      // The overflow above must not leave state in this fresh render.
+      expect(template(nestedReplies(1))).toBe('');
+    });
+
+    it('keeps rendering correct after a helper catches an overflow', function () {
+      var env = Handlebars.create();
+      env.registerPartial('comment', commentPartial);
+      env.registerHelper('guard', function (context, options) {
+        try {
+          return options.fn(context);
+        } catch {
+          return '[blocked]';
+        }
+      });
+      var template = env.compile(
+        '{{#guard a}}{{> comment .}}{{/guard}}|{{#guard b}}{{> comment .}}{{/guard}}',
+        { maxPartialDepth: 200 }
+      );
+      var result = template({
+        a: nestedReplies(300),
+        b: { replies: [] },
+      });
+      // The caught overflow of the first call must not desync the second one.
+      expect(result).toBe('[blocked]|');
+    });
+
+    it('is respected by precompiled templates', function () {
+      if (!Handlebars.precompile) {
+        return;
+      }
+      // The precompiled spec is a JS object literal (it contains compiled
+      // functions), so it is evaluated as source rather than parsed as JSON.
+      var evaluateSpec = function (source) {
+        // eslint-disable-next-line no-new-func
+        return new Function('return (' + source + ')')();
+      };
+      var env = Handlebars.create();
+      var partialSpec = evaluateSpec(env.precompile(commentPartial));
+      var runtimeEnv = Handlebars.create();
+      runtimeEnv.registerPartial('comment', runtimeEnv.template(partialSpec));
+
+      var spec = evaluateSpec(
+        env.precompile('{{> comment .}}', { maxPartialDepth: 3 })
+      );
+      expect(spec.maxPartialDepth).toBe(3);
+
+      var template = runtimeEnv.template(spec);
+      expect(function () {
+        template(nestedReplies(6));
+      }).toThrow(Handlebars.Exception, /limit of 3/);
+      // runtime options still override the baked-in value
+      expect(function () {
+        template(nestedReplies(6), { maxPartialDepth: 2 });
+      }).toThrow(Handlebars.Exception, /limit of 2/);
+    });
+  });
 });

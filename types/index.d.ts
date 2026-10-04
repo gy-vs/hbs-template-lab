@@ -40,6 +40,11 @@ declare namespace Handlebars {
     allowedProtoMethods?: { [name: string]: boolean };
     allowProtoPropertiesByDefault?: boolean;
     allowProtoMethodsByDefault?: boolean;
+    /**
+     * Overrides the `maxPartialDepth` compile option for this render. Must be
+     * a positive finite integer; other values (including 0) are ignored.
+     */
+    maxPartialDepth?: number;
   }
 
   export interface HelperOptions {
@@ -242,6 +247,13 @@ export interface CompileOptions {
   preventIndent?: boolean;
   ignoreStandalone?: boolean;
   explicitPartialContext?: boolean;
+  /**
+   * Maximum allowed nesting depth of partials within a single render. Flat
+   * partial calls (e.g. list items) do not nest and are not counted. Must be
+   * a positive finite integer; other values (including 0) fall back to the
+   * default of 200. Can be overridden at render time via the runtime options.
+   */
+  maxPartialDepth?: number;
 }
 
 export type KnownHelpers = {
